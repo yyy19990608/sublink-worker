@@ -332,6 +332,32 @@ export function createApp(bindings = {}) {
         }
     });
 
+    app.post('/shorten-v2', async (c) => {
+        try {
+            const body = await c.req.json();
+            const url = body?.url;
+            const shortCode = body?.shortCode;
+            if (!url) {
+                return c.text('Missing URL parameter', 400);
+            }
+            let parsedUrl;
+            try {
+                parsedUrl = new URL(url);
+            } catch {
+                return c.text('Invalid URL parameter', 400);
+            }
+
+            const shortLinks = requireShortLinkService(services.shortLinks);
+            const code = await shortLinks.createShortLink(parsedUrl.search, shortCode);
+            return c.text(code);
+        } catch (error) {
+            if (error instanceof SyntaxError) {
+                return c.text('Invalid JSON body', 400);
+            }
+            return handleError(c, error, runtime.logger);
+        }
+    });
+
     const redirectHandler = (prefix) => async (c) => {
         try {
             const code = c.req.param('code');
@@ -340,7 +366,15 @@ export function createApp(bindings = {}) {
             if (!originalParam) return c.text('Short URL not found', 404);
 
             const url = new URL(c.req.url);
-            return c.redirect(`${url.origin}/${prefix}${originalParam}`);
+            const target = `${url.origin}/${prefix}${originalParam}`;
+
+            // Large subscriptions can exceed the browser or edge URL limit if
+            // redirected. Dispatch inside the Worker so the short URL itself
+            // directly returns the generated configuration.
+            return app.request(target, {
+                method: 'GET',
+                headers: c.req.raw.headers
+            }, c.env);
         } catch (error) {
             return handleError(c, error, runtime.logger);
         }
